@@ -55,14 +55,18 @@ export default function VirtualScrollableGrid({
   const measureGridRef = useRef<HTMLDivElement>(null);
   const childrenRef = useRef(children);
   const rafRef = useRef<number | null>(null);
+  const needsMeasureRef = useRef(true);
 
   childrenRef.current = children;
 
-  const [layout, setLayout] = useState<LayoutMetrics>(() => ({
+  const initialLayout: LayoutMetrics = {
     columns: Math.max(1, mobileColumns),
     rowHeight: DEFAULT_ROW_HEIGHT,
     totalRows: Math.ceil(children.length / Math.max(1, mobileColumns)),
-  }));
+  };
+  const layoutRef = useRef<LayoutMetrics>(initialLayout);
+
+  const [layout, setLayout] = useState<LayoutMetrics>(() => initialLayout);
   const [range, setRange] = useState({ startRow: 0, endRow: 0 });
 
   const computeFallbackColumns = () => {
@@ -169,9 +173,23 @@ export default function VirtualScrollableGrid({
     return { startRow: clampedStart, endRow: clampedEnd };
   };
 
-  const syncLayoutAndRange = () => {
-    const nextLayout = readLayout();
+  const syncRange = (nextLayout: LayoutMetrics) => {
     const nextRange = computeRange(nextLayout);
+    setRange((prev) => {
+      if (
+        prev.startRow === nextRange.startRow &&
+        prev.endRow === nextRange.endRow
+      ) {
+        return prev;
+      }
+
+      return nextRange;
+    });
+  };
+
+  const syncMeasuredLayout = () => {
+    const nextLayout = readLayout();
+    layoutRef.current = nextLayout;
 
     setLayout((prev) => {
       if (
@@ -185,37 +203,38 @@ export default function VirtualScrollableGrid({
       return nextLayout;
     });
 
-    setRange((prev) => {
-      if (
-        prev.startRow === nextRange.startRow &&
-        prev.endRow === nextRange.endRow
-      ) {
-        return prev;
-      }
-
-      return nextRange;
-    });
+    syncRange(nextLayout);
   };
 
-  const scheduleUpdate = () => {
+  const scheduleUpdate = (measure = false) => {
     if (typeof window === 'undefined') return;
+    if (measure) {
+      needsMeasureRef.current = true;
+    }
     if (rafRef.current != null) return;
 
     rafRef.current = window.requestAnimationFrame(() => {
       rafRef.current = null;
-      syncLayoutAndRange();
+
+      if (needsMeasureRef.current) {
+        needsMeasureRef.current = false;
+        syncMeasuredLayout();
+        return;
+      }
+
+      syncRange(layoutRef.current);
     });
   };
 
   useEffect(() => {
-    scheduleUpdate();
+    scheduleUpdate(true);
 
     const handleScroll = () => {
       scheduleUpdate();
     };
 
     const handleResize = () => {
-      scheduleUpdate();
+      scheduleUpdate(true);
     };
 
     const bodyEl = document.body;
@@ -230,7 +249,7 @@ export default function VirtualScrollableGrid({
     let resizeObserver: ResizeObserver | null = null;
     if (typeof ResizeObserver !== 'undefined') {
       resizeObserver = new ResizeObserver(() => {
-        scheduleUpdate();
+        scheduleUpdate(true);
       });
 
       if (containerRef.current) {

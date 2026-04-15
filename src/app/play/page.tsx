@@ -4,7 +4,7 @@
 
 import { AlertCircle, Cloud, Heart, Loader2, Router, Sparkles, X } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 import {
@@ -633,12 +633,29 @@ function PlayPageClient() {
   // 搜索所需信息
   const [searchTitle] = useState(searchParams.get('stitle') || '');
   const [searchType] = useState(searchParams.get('stype') || '');
-  const [episodeProgressContentKey] = useState(() =>
-    buildEpisodeProgressContentKey({
-      title: searchTitle || searchParams.get('title') || '',
-      year: searchParams.get('year') || '',
+  const [initialEpisodeProgressTitle] = useState(
+    searchTitle || searchParams.get('title') || ''
+  );
+  const [initialEpisodeProgressYear] = useState(
+    searchParams.get('year') || ''
+  );
+  const episodeProgressContentKey = useMemo(
+    () =>
+      buildEpisodeProgressContentKey({
+        doubanId: videoDoubanId || detail?.douban_id,
+        tmdbId: detail?.tmdb_id,
+        title: initialEpisodeProgressTitle,
+        year: initialEpisodeProgressYear,
+        searchType,
+      }),
+    [
+      detail?.douban_id,
+      detail?.tmdb_id,
+      initialEpisodeProgressTitle,
+      initialEpisodeProgressYear,
       searchType,
-    })
+      videoDoubanId,
+    ]
   );
 
   // 是否需要优选
@@ -2719,13 +2736,13 @@ function PlayPageClient() {
   const ensureVideoSource = (video: HTMLVideoElement | null, url: string) => {
     if (!video || !url) return;
     const sources = Array.from(video.getElementsByTagName('source'));
+    const isHlsJsActive = !!(video as any).hls;
     const isHlsLikeSource =
-      !!(video as any).hls ||
       /\.m3u8?($|\?)/i.test(url) ||
       url.includes('/api/proxy-m3u8') ||
       url.includes('/api/proxy/vod/m3u8');
 
-    if (isHlsLikeSource) {
+    if (isHlsJsActive && isHlsLikeSource) {
       // HLS 由 hls.js 接管时，不能再给 <video> 塞原始 m3u8 source，
       // 否则 Safari 可能切回原生 HLS，和 MSE/hls.js 抢同一个播放器。
       sources.forEach((s) => s.remove());
@@ -3898,6 +3915,13 @@ function PlayPageClient() {
 
       // 加载播放记录
       try {
+        const detailEpisodeProgressContentKey = buildEpisodeProgressContentKey({
+          doubanId: detailData.douban_id,
+          tmdbId: detailData.tmdb_id,
+          title: initialEpisodeProgressTitle,
+          year: initialEpisodeProgressYear,
+          searchType,
+        });
         const allRecords = await getAllPlayRecords();
         const key = generateStorageKey(detailData.source, detailData.id);
         const record = allRecords[key];
@@ -3923,7 +3947,7 @@ function PlayPageClient() {
               // 否则使用点击的文件集数，从头开始播放
               initialIndex = detailData.initialEpisodeIndex;
               const localEpisodeTime = loadLocalEpisodeProgress(
-                episodeProgressContentKey,
+                detailEpisodeProgressContentKey,
                 initialIndex
               );
               resumeTimeRef.current = localEpisodeTime;
@@ -3942,7 +3966,7 @@ function PlayPageClient() {
             // 使用点击的文件集数
             initialIndex = detailData.initialEpisodeIndex;
             resumeTimeRef.current = loadLocalEpisodeProgress(
-              episodeProgressContentKey,
+              detailEpisodeProgressContentKey,
               initialIndex
             );
             console.log('[Play] 没有播放记录，使用点击的文件集数:', initialIndex);
@@ -3950,7 +3974,7 @@ function PlayPageClient() {
             // 默认从第0集开始
             initialIndex = 0;
             resumeTimeRef.current = loadLocalEpisodeProgress(
-              episodeProgressContentKey,
+              detailEpisodeProgressContentKey,
               initialIndex
             );
             console.log('[Play] 没有播放记录，从第0集开始');
@@ -4220,6 +4244,14 @@ function PlayPageClient() {
         return;
       }
 
+      const newEpisodeProgressContentKey = buildEpisodeProgressContentKey({
+        doubanId: newDetail.douban_id,
+        tmdbId: newDetail.tmdb_id,
+        title: initialEpisodeProgressTitle,
+        year: initialEpisodeProgressYear,
+        searchType,
+      });
+
       // 尝试跳转到当前正在播放的集数
       const previousEpisodeIndex = currentEpisodeIndexRef.current;
       const previousSource = currentSourceRef.current;
@@ -4235,7 +4267,7 @@ function PlayPageClient() {
       const resumeTime = isSameEpisodeSwitch
         ? await getSourceSwitchResumeTime(previousEpisodeIndex, currentPlayTime)
         : loadLocalEpisodeProgress(
-            episodeProgressContentKey,
+            newEpisodeProgressContentKey,
             targetIndex
           );
       resumeTimeRef.current = resumeTime;
@@ -4280,7 +4312,7 @@ function PlayPageClient() {
       if (isSameEpisodeSwitch && resumeTime && resumeTime > 1) {
         const currentDuration = artPlayerRef.current?.duration || 0;
         saveLocalEpisodeProgress(
-          episodeProgressContentKey,
+          newEpisodeProgressContentKey,
           targetIndex,
           resumeTime,
           currentDuration
@@ -5730,6 +5762,29 @@ function PlayPageClient() {
         const Artplayer = ArtplayerModule.default;
         const Hls = HlsModule.default;
         const artplayerPluginDanmuku = DanmukuPlugin.default as any;
+        const playerTimeouts = new Set<number>();
+        const clearTrackedTimeout = (timeoutId: number | null) => {
+          if (timeoutId == null) {
+            return;
+          }
+
+          window.clearTimeout(timeoutId);
+          playerTimeouts.delete(timeoutId);
+        };
+        const schedulePlayerTimeout = (callback: () => void, delay: number) => {
+          const timeoutId = window.setTimeout(() => {
+            playerTimeouts.delete(timeoutId);
+            callback();
+          }, delay);
+          playerTimeouts.add(timeoutId);
+          return timeoutId;
+        };
+        const clearPlayerTimeouts = () => {
+          playerTimeouts.forEach((timeoutId) => {
+            window.clearTimeout(timeoutId);
+          });
+          playerTimeouts.clear();
+        };
 
         const syncPlaybackPitch = () => {
           if (!isWebkit || !artPlayerRef.current?.video) {
@@ -5749,6 +5804,43 @@ function PlayPageClient() {
           }
         };
 
+        const shouldRescueWebkitHls = (
+          video: HTMLVideoElement & {
+            hls?: {
+              detachMedia?: () => void;
+              attachMedia?: (video: HTMLVideoElement) => void;
+              startLoad?: (startPosition?: number) => void;
+              bufferController?: {
+                mediaSource?: {
+                  readyState?: string;
+                };
+              };
+            };
+          }
+        ) => {
+          const hls = video.hls;
+          if (!hls) {
+            return false;
+          }
+
+          let hasBufferedData = false;
+          try {
+            hasBufferedData = video.buffered.length > 0;
+          } catch {
+            hasBufferedData = false;
+          }
+
+          if (video.readyState > 0 || hasBufferedData) {
+            return false;
+          }
+
+          const currentSrc = video.currentSrc || video.src || '';
+          const mediaSourceState = hls.bufferController?.mediaSource?.readyState || '';
+          const usingBlobMsePath = currentSrc.startsWith('blob:') && mediaSourceState !== 'closed';
+
+          return !usingBlobMsePath;
+        };
+
         const rescueWebkitHlsBootstrap = (
           reason: string,
           retryDelays: number[] = [1500, 3500, 6000]
@@ -5766,15 +5858,13 @@ function PlayPageClient() {
           };
 
           retryDelays.forEach((delay) => {
-            window.setTimeout(() => {
+            schedulePlayerTimeout(() => {
               if (!artPlayerRef.current || artPlayerRef.current.video !== video) {
                 return;
               }
 
               const hls = video.hls;
-              const currentSrc = video.currentSrc || video.src || '';
-
-              if (!hls || currentSrc || video.readyState > 0) {
+              if (!shouldRescueWebkitHls(video)) {
                 return;
               }
 
@@ -5962,18 +6052,15 @@ function PlayPageClient() {
 
               hls.on(Hls.Events.MEDIA_ATTACHED, () => {
                 kickStartHlsPlayback();
-              });
 
-              hls.on(Hls.Events.MEDIA_ATTACHED, () => {
                 if (!isWebkit) {
                   return;
                 }
 
                 // Safari 偶发出现 media 已 attach 但 video.src 仍为空的状态。
-                // 这里延迟自检一次，必要时重新 attach，强制进入 blob: MSE 路径。
-                window.setTimeout(() => {
-                  const currentSrc = video.currentSrc || video.src || '';
-                  if (currentSrc) {
+                // 这里延迟自检一次，必要时重新 attach，强制回到 blob: MSE 路径。
+                schedulePlayerTimeout(() => {
+                  if (!shouldRescueWebkitHls(video)) {
                     return;
                   }
 
@@ -5993,9 +6080,8 @@ function PlayPageClient() {
               video.hls = hls;
 
               if (isWebkit) {
-                window.setTimeout(() => {
-                  const currentSrc = video.currentSrc || video.src || '';
-                  if (currentSrc) {
+                schedulePlayerTimeout(() => {
+                  if (!shouldRescueWebkitHls(video)) {
                     return;
                   }
 
@@ -6862,6 +6948,10 @@ function PlayPageClient() {
               },
             }] : []),
           ],
+        });
+
+        artPlayerRef.current.on('destroy', () => {
+          clearPlayerTimeouts();
         });
 
         // 监听播放器事件
@@ -7753,8 +7843,16 @@ function PlayPageClient() {
           }
           resumeTimeRef.current = null;
 
-          setTimeout(() => {
+          schedulePlayerTimeout(() => {
+            if (!artPlayerRef.current) {
+              return;
+            }
+
             const restorePlaybackRate = () => {
+              if (!artPlayerRef.current) {
+                return;
+              }
+
               if (
                 Math.abs(
                   artPlayerRef.current.playbackRate - lastPlaybackRateRef.current
@@ -7781,10 +7879,10 @@ function PlayPageClient() {
 
               if (video.seeking) {
                 const handleSeeked = () => {
-                  window.clearTimeout(seekedTimeout);
+                  clearTrackedTimeout(seekedTimeout);
                   applyRateAfterSeek();
                 };
-                const seekedTimeout = window.setTimeout(() => {
+                const seekedTimeout = schedulePlayerTimeout(() => {
                   video.removeEventListener('seeked', handleSeeked);
                   applyRateAfterSeek();
                 }, 300);

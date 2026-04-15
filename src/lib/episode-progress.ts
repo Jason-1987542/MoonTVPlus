@@ -1,5 +1,5 @@
 const EPISODE_PROGRESS_PREFIX = 'moontv_episode_progress:';
-const EPISODE_PROGRESS_MAX_SHOWS = 100;
+const EPISODE_PROGRESS_MAX_SHOWS = 20;
 const EPISODE_PROGRESS_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 120;
 
 export interface LocalEpisodeProgressRecord {
@@ -9,6 +9,8 @@ export interface LocalEpisodeProgressRecord {
 }
 
 interface EpisodeProgressContentIdentity {
+  doubanId?: number | string;
+  tmdbId?: number | string;
   title?: string;
   year?: string;
   searchType?: string;
@@ -201,7 +203,21 @@ function normalizeContentTitle(title: string) {
     .toLowerCase();
 }
 
-export function buildEpisodeProgressContentKey(
+function normalizeContentIdentityId(value: unknown) {
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue) && numericValue > 0) {
+    return String(Math.floor(numericValue));
+  }
+
+  const text = String(value || '').trim();
+  if (/^[1-9]\d*$/.test(text)) {
+    return text;
+  }
+
+  return null;
+}
+
+function buildLegacyEpisodeProgressContentKey(
   identity: EpisodeProgressContentIdentity
 ) {
   const title = normalizeContentTitle(identity.title || '');
@@ -213,6 +229,23 @@ export function buildEpisodeProgressContentKey(
   }
 
   return `${title}|${year}|${searchType}`;
+}
+
+export function buildEpisodeProgressContentKey(
+  identity: EpisodeProgressContentIdentity
+) {
+  const doubanId = normalizeContentIdentityId(identity.doubanId);
+  if (doubanId) {
+    return `douban:${doubanId}`;
+  }
+
+  const tmdbId = normalizeContentIdentityId(identity.tmdbId);
+  if (tmdbId) {
+    const searchType = String(identity.searchType || '').trim().toLowerCase();
+    return searchType ? `tmdb:${searchType}:${tmdbId}` : `tmdb:${tmdbId}`;
+  }
+
+  return buildLegacyEpisodeProgressContentKey(identity);
 }
 
 export function getEpisodeProgressStorageKey(contentKey: string) {
@@ -287,6 +320,7 @@ export function saveLocalEpisodeProgress(
   const key = getEpisodeProgressStorageKey(contentKey);
   const now = Date.now();
   const currentStore = readEpisodeProgressStore(contentKey);
+  const shouldPruneAfterSave = !currentStore;
   const nextStore: LocalEpisodeProgressStore = {
     updatedAt: now,
     episodes: {
@@ -303,13 +337,17 @@ export function saveLocalEpisodeProgress(
 
   try {
     localStorage.setItem(key, payload);
-    pruneLocalEpisodeProgressStorage();
+    if (shouldPruneAfterSave) {
+      pruneLocalEpisodeProgressStorage();
+    }
   } catch (error) {
     if (!isQuotaExceededError(error)) {
       throw error;
     }
 
-    pruneLocalEpisodeProgressStorage(Math.max(50, Math.floor(EPISODE_PROGRESS_MAX_SHOWS / 2)));
+    pruneLocalEpisodeProgressStorage(
+      Math.max(10, Math.floor(EPISODE_PROGRESS_MAX_SHOWS / 2))
+    );
     localStorage.setItem(key, payload);
     pruneLocalEpisodeProgressStorage();
   }
