@@ -24,10 +24,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: 'npm'
+          cache: 'pnpm'
 
-      - name: Install dependencies
-        run: npm install --legacy-peer-deps
+      - name: Install corepack & pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      - name: Install dependencies with pnpm
+        run: pnpm install --frozen-lockfile
 
       - name: Set environment variables
         run: |
@@ -136,10 +141,10 @@ jobs:
           cat wrangler.toml
 
       - name: Build for Cloudflare
-        run: npm run build:cloudflare
+        run: pnpm run build:cloudflare
 
       - name: Install Wrangler
-        run: npm install -g wrangler@4.60.0
+        run: pnpm add -g wrangler@4.60.0 --ignore-scripts
 
       - name: Run D1 Database Migrations
         run: |
