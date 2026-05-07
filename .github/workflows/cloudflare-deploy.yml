@@ -20,20 +20,14 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      # 弃用 pnpm/action-setup，改用 corepack 原生安装，彻底解决路径冲突
-      - name: Enable corepack and install pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@latest --activate
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: 'pnpm'
+          cache: 'npm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        run: npm install --legacy-peer-deps
 
       - name: Set environment variables
         run: |
@@ -142,7 +136,7 @@ jobs:
           cat wrangler.toml
 
       - name: Build for Cloudflare
-        run: pnpm run build:cloudflare
+        run: npm run build:cloudflare
 
       - name: Install Wrangler
         run: npm install -g wrangler@4.60.0
